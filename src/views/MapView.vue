@@ -7,21 +7,21 @@ import { onMounted } from 'vue'
 import L from 'leaflet'
 import 'leaflet/dist/leaflet.css'
 import { exampleCollection } from '../assets/exampleGeoJson'
-import { center } from '@turf/center'
 
 useHead({
   title: 'Yurii'
 })
 
 onMounted(() => {
-  const routeCenter = center(exampleCollection).geometry.coordinates.reverse() as [number, number]
-  const map = L.map('map', { center: routeCenter, zoom: 1 })
+  const routeLayer = L.geoJSON(exampleCollection)
+  const routeBounds = routeLayer.getBounds()
+  const routeCenter = routeBounds.getCenter()
+  const map = L.map('map', { center: routeCenter })
   L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 19,
     attribution: '&copy; <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a>'
   }).addTo(map)
-  const routeLayer = L.geoJSON(exampleCollection).addTo(map)
-  const routeBounds = routeLayer.getBounds()
+  routeLayer.addTo(map)
   map.fitBounds(routeBounds)
 })
 </script>
