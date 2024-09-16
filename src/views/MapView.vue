@@ -14,7 +14,6 @@ import { onMounted, ref } from 'vue'
 import L, { LatLng } from 'leaflet'
 import ExifReader from 'exifreader'
 import 'leaflet/dist/leaflet.css'
-import { exampleCollection } from '../assets/swedenGeoJson'
 import type { FeatureCollection, GeoJsonProperties, Geometry, LineString, Position } from 'geojson'
 import { parseGpx } from '@/services/gpx'
 
@@ -22,7 +21,7 @@ useHead({
   title: 'Yurii'
 })
 
-function findHoveredCoordIndex(coords: Position[], target: LatLng) {
+function findClosestCoordinate(coords: Position[], target: LatLng) {
   let minDistance = Infinity
   let closestIndex = -1
   coords.forEach((c, index) => {
@@ -33,7 +32,7 @@ function findHoveredCoordIndex(coords: Position[], target: LatLng) {
       closestIndex = index
     }
   })
-  return closestIndex
+  return { index: closestIndex, minDistance }
 }
 
 function getBase64(file: File): Promise<string> {
@@ -50,6 +49,7 @@ function getBase64(file: File): Promise<string> {
 
 const map = ref<L.Map>()
 const routeLayer = ref<L.GeoJSON>()
+const trackGeoJson = ref<FeatureCollection | null>(null)
 
 onMounted(() => {
   map.value = L.map('map', {
@@ -82,7 +82,7 @@ function placeTrackOnMap(features: FeatureCollection<Geometry, GeoJsonProperties
   })
   routeLayer.value.on('mousemove', ({ propagatedFrom, latlng }) => {
     const coords = propagatedFrom.feature.geometry.coordinates
-    const hoveredIndex = findHoveredCoordIndex(coords, latlng)
+    const { index: hoveredIndex } = findClosestCoordinate(coords, latlng)
     circleMarker.setLatLng(L.latLng(coords[hoveredIndex][1], coords[hoveredIndex][0]))
     if (!map.value) {
       return
@@ -109,7 +109,8 @@ async function updateGpxTrack(event: Event) {
   }
   try {
     const geoJson = parseGpx(await track.text())
-    placeTrackOnMap(geoJson as FeatureCollection)
+    trackGeoJson.value = geoJson as FeatureCollection
+    placeTrackOnMap(trackGeoJson.value)
   } catch (error) {
     console.error(error)
     alert(error)
@@ -119,6 +120,7 @@ async function updateGpxTrack(event: Event) {
 interface RoutePhoto {
   base64: string
   latlng: L.LatLng
+  distance: number
 }
 
 const routePhoto = ref<RoutePhoto>()
@@ -137,24 +139,32 @@ async function handlePhoto(event: Event) {
     return
   }
 
+  if (!trackGeoJson.value) {
+    return
+  }
+  const photoLatLng = L.latLng(Number(lat), Number(lng))
+  const { index, minDistance } = findClosestCoordinate(
+    (trackGeoJson.value.features[0].geometry as LineString).coordinates,
+    photoLatLng
+  )
+
   routePhoto.value = {
     base64: await getBase64(photo),
-    latlng: L.latLng(Number(lat), Number(lng))
+    latlng: photoLatLng,
+    distance: minDistance
   }
-  const index = findHoveredCoordIndex(
-    (exampleCollection.features[0].geometry as LineString).coordinates,
-    routePhoto.value.latlng
-  )
-  console.log(
-    `Coordinates: ${lat}, ${lng}`,
-    `Date: ${date}, ${date ? new Date(date) : ''}`,
-    `Index: ${index}`
-  )
+  console.log('Photo distance to route:', minDistance, 'm')
+  console.log(`Coordinates: ${lat}, ${lng}`, `Date: ${date}`, `Index: ${index}`)
   openPhotoPopup()
 }
 
 function openPhotoPopup() {
   if (!map.value || !routePhoto.value) {
+    return
+  }
+  if (routePhoto.value.distance > 100) {
+    alert('Photo is too far from the route')
+    console.log('Photo is too far from the route, distance:', routePhoto.value.distance, 'm')
     return
   }
   L.popup({ content: `<img class="route-image" src=${routePhoto.value.base64} />` })
