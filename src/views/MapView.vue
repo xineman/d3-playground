@@ -1,6 +1,12 @@
 <template>
   <div id="map"></div>
-  <input ref="photo" type="file" accept="image/*" @change="handlePhoto" />
+  <form>
+    <label for="photo">Photo</label>
+    <input id="photo" type="file" accept="image/*" @change="handlePhoto" />
+    <label for="track">Track</label>
+    <input id="track" type="file" accept=".gpx" @change="updateGpxTrack" />
+    <button type="reset" @click="resetMap">Reset</button>
+  </form>
 </template>
 <script setup lang="ts">
 import { useHead } from '@unhead/vue'
@@ -9,7 +15,8 @@ import L, { LatLng } from 'leaflet'
 import ExifReader from 'exifreader'
 import 'leaflet/dist/leaflet.css'
 import { exampleCollection } from '../assets/swedenGeoJson'
-import type { LineString, Position } from 'geojson'
+import type { FeatureCollection, GeoJsonProperties, Geometry, LineString, Position } from 'geojson'
+import { parseGpx } from '@/services/gpx'
 
 useHead({
   title: 'Yurii'
@@ -45,15 +52,30 @@ const map = ref<L.Map>()
 const routeLayer = ref<L.GeoJSON>()
 
 onMounted(() => {
-  routeLayer.value = L.geoJSON(exampleCollection)
-  const routeBounds = routeLayer.value.getBounds()
-  const routeCenter = routeBounds.getCenter()
-  map.value = L.map('map', { center: routeCenter })
+  map.value = L.map('map', {
+    center: [0, 0],
+    zoom: 1
+  })
   L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 19,
     attribution: '&copy; <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a>'
   }).addTo(map.value)
+})
+
+function resetMap() {
+  map.value?.setView([0, 0], 1)
+  routeLayer.value?.remove()
+}
+
+function placeTrackOnMap(features: FeatureCollection<Geometry, GeoJsonProperties>) {
+  if (!map.value) {
+    return
+  }
+  routeLayer.value = L.geoJSON(features)
   routeLayer.value.addTo(map.value)
+  const routeBounds = routeLayer.value.getBounds()
+  map.value.fitBounds(routeBounds)
+
   const circleMarker = L.circleMarker([0, 0], {
     radius: 7,
     interactive: false
@@ -78,10 +100,21 @@ onMounted(() => {
     map.value.closePopup()
     openPhotoPopup()
   })
-  map.value.fitBounds(routeBounds)
-})
+}
 
-const photo = ref<HTMLInputElement>()
+async function updateGpxTrack(event: Event) {
+  const track = (event.target as HTMLInputElement).files?.[0]
+  if (!track) {
+    return
+  }
+  try {
+    const geoJson = parseGpx(await track.text())
+    placeTrackOnMap(geoJson as FeatureCollection)
+  } catch (error) {
+    console.error(error)
+    alert(error)
+  }
+}
 
 interface RoutePhoto {
   base64: string
@@ -112,7 +145,11 @@ async function handlePhoto(event: Event) {
     (exampleCollection.features[0].geometry as LineString).coordinates,
     routePhoto.value.latlng
   )
-  console.log(`Coordinates: ${lat}, ${lng}`, `Date: ${date}, ${new Date(date)}`, `Index: ${index}`)
+  console.log(
+    `Coordinates: ${lat}, ${lng}`,
+    `Date: ${date}, ${date ? new Date(date) : ''}`,
+    `Index: ${index}`
+  )
   openPhotoPopup()
 }
 
