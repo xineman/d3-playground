@@ -82,10 +82,23 @@ onMounted(() => {
   }).addTo(map.value)
 })
 
-watch(selectedPhotos, () => {
-  openPhotoPopups()
-  placeUnrelevantPhotos()
-})
+function calculatePhotoLayers() {
+  photoMarkersLayer.value.clearLayers()
+  photoPopupsLayer.value.clearLayers()
+  selectedPhotos.value.forEach((photo) => {
+    const popup = L.popup({ content: `<img class="route-image" src=${photo.base64} />` })
+    if (photo.distance > 100) {
+      photoMarkersLayer.value.addLayer(L.marker(photo.latlng).bindPopup(popup))
+    } else {
+      photoPopupsLayer.value.addLayer(popup.setLatLng(photo.latlng))
+    }
+  })
+  if (map.value) {
+    photoMarkersLayer.value.addTo(map.value)
+    photoPopupsLayer.value.addTo(map.value)
+  }
+}
+watch(selectedPhotos, calculatePhotoLayers)
 
 function calculateSelectedPhotosDistanceToRoute() {
   selectedPhotos.value = selectedPhotos.value.map((p) => ({
@@ -147,7 +160,7 @@ function placeTrackOnMap(features: FeatureCollection<Geometry, GeoJsonProperties
     }
     map.value.removeLayer(circleMarker)
     map.value.closePopup()
-    openPhotoPopups()
+    photoPopupsLayer.value.addTo(map.value)
   })
 }
 
@@ -220,36 +233,6 @@ async function handlePhotosChange(event: Event) {
     await Promise.all(Array.from(files).map((f) => processPhoto(f, existingFiles)))
   ).filter((f) => !!f)
   selectedPhotos.value = photos
-}
-
-function placeUnrelevantPhotos() {
-  photoMarkersLayer.value.clearLayers()
-  selectedPhotos.value
-    .filter((p) => p.distance > 100)
-    .forEach((photo) => {
-      photoMarkersLayer.value.addLayer(
-        L.marker(photo.latlng).bindPopup(`<img class="route-image" src=${photo.base64} />`)
-      )
-    })
-  if (map.value) {
-    photoMarkersLayer.value.addTo(map.value)
-  }
-}
-
-function openPhotoPopups() {
-  photoPopupsLayer.value.clearLayers()
-  selectedPhotos.value
-    .filter((p) => p.distance <= 100)
-    .forEach((photo) => {
-      photoPopupsLayer.value.addLayer(
-        L.popup({ content: `<img class="route-image" src=${photo.base64} />` }).setLatLng(
-          photo.latlng
-        )
-      )
-    })
-  if (map.value) {
-    photoPopupsLayer.value.addTo(map.value)
-  }
 }
 </script>
 <style scoped lang="scss">
