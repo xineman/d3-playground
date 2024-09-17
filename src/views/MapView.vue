@@ -1,16 +1,17 @@
 <template>
   <div id="map"></div>
   <form>
-    <label for="photo">Photo</label>
-    <input id="photo" type="file" accept="image/*" @change="handlePhoto" />
+    <label for="photos">Photos</label>
+    <input id="photos" type="file" multiple accept="image/*" @change="handlePhotosChange" />
     <label for="track">Track</label>
-    <input id="track" type="file" accept=".gpx" @change="updateGpxTrack" />
+    <input ref="trackInput" id="track" type="file" accept=".gpx" @change="updateGpxTrack" />
+    <button type="button" @click="removeTrack">Remove track</button>
     <button type="reset" @click="resetMap">Reset</button>
   </form>
 </template>
 <script setup lang="ts">
 import { useHead } from '@unhead/vue'
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import L, { LatLng } from 'leaflet'
 import ExifReader from 'exifreader'
 import 'leaflet/dist/leaflet.css'
@@ -34,6 +35,14 @@ function findClosestCoordinate(coords: Position[], target: LatLng) {
   })
   return { index: closestIndex, minDistance }
 }
+function getPhotoDistanceToRoute(photoLatLng: L.LatLng) {
+  return trackGeoJson.value
+    ? findClosestCoordinate(
+        (trackGeoJson.value.features[0].geometry as LineString).coordinates,
+        photoLatLng
+      ).minDistance
+    : Infinity
+}
 
 function getBase64(file: File): Promise<string> {
   var fileReader = new FileReader()
@@ -47,9 +56,20 @@ function getBase64(file: File): Promise<string> {
   })
 }
 
+const trackInput = ref<HTMLInputElement>()
 const map = ref<L.Map>()
-const routeLayer = ref<L.GeoJSON>()
+const routeLayer = ref<L.GeoJSON | null>(null)
+const photoMarkersLayer = ref(L.layerGroup())
+const photoPopupsLayer = ref(L.layerGroup())
+
 const trackGeoJson = ref<FeatureCollection | null>(null)
+const selectedPhotos = ref<RoutePhoto[]>([])
+interface RoutePhoto {
+  base64: string
+  latlng: L.LatLng
+  distance: number
+  id: string
+}
 
 onMounted(() => {
   map.value = L.map('map', {
@@ -62,9 +82,37 @@ onMounted(() => {
   }).addTo(map.value)
 })
 
+watch(selectedPhotos, () => {
+  openPhotoPopups()
+  placeUnrelevantPhotos()
+})
+
+function calculateSelectedPhotosDistanceToRoute() {
+  selectedPhotos.value = selectedPhotos.value.map((p) => ({
+    ...p,
+    distance: getPhotoDistanceToRoute(p.latlng)
+  }))
+}
+watch(trackGeoJson, calculateSelectedPhotosDistanceToRoute)
+
+function removeTrack() {
+  if (trackInput.value) {
+    trackInput.value.value = ''
+    trackGeoJson.value = null
+  }
+  if (routeLayer.value) {
+    routeLayer.value.remove()
+    routeLayer.value = null
+    trackGeoJson.value = null
+  }
+}
+
 function resetMap() {
   map.value?.setView([0, 0], 1)
+  trackGeoJson.value = null
   routeLayer.value?.remove()
+  routeLayer.value = null
+  selectedPhotos.value = []
 }
 
 function placeTrackOnMap(features: FeatureCollection<Geometry, GeoJsonProperties>) {
@@ -88,6 +136,7 @@ function placeTrackOnMap(features: FeatureCollection<Geometry, GeoJsonProperties
       return
     }
     map.value.addLayer(circleMarker)
+    photoPopupsLayer.value.remove()
     L.popup({ content: `<p>Elevation: ${coords[hoveredIndex][2].toFixed(2)} m</p>` })
       .setLatLng(latlng)
       .openOn(map.value)
@@ -98,7 +147,7 @@ function placeTrackOnMap(features: FeatureCollection<Geometry, GeoJsonProperties
     }
     map.value.removeLayer(circleMarker)
     map.value.closePopup()
-    openPhotoPopup()
+    openPhotoPopups()
   })
 }
 
@@ -117,59 +166,90 @@ async function updateGpxTrack(event: Event) {
   }
 }
 
-interface RoutePhoto {
-  base64: string
-  latlng: L.LatLng
-  distance: number
+function computeFileId(file: File) {
+  return `${file.name}+${file.size}+${file.lastModified}`
 }
-
-const routePhoto = ref<RoutePhoto>()
-
-async function handlePhoto(event: Event) {
-  const photo = (event.target as HTMLInputElement).files?.[0]
-  if (!photo) {
-    return
+async function processPhoto(
+  photo: File,
+  existingFiles: Record<string, RoutePhoto>
+): Promise<RoutePhoto | null> {
+  const photoId = computeFileId(photo)
+  if (existingFiles[photoId]) {
+    return existingFiles[photoId]
   }
   const tags = await ExifReader.load(photo)
   const lat = tags.GPSLatitude?.description
   const lng = tags.GPSLongitude?.description
   const date = tags.DateTimeOriginal?.description
 
-  if (!lat || !lng || !routeLayer.value) {
-    return
-  }
-
-  if (!trackGeoJson.value) {
-    return
+  if (!lat || !lng) {
+    return null
   }
   const photoLatLng = L.latLng(Number(lat), Number(lng))
-  const { index, minDistance } = findClosestCoordinate(
-    (trackGeoJson.value.features[0].geometry as LineString).coordinates,
-    photoLatLng
-  )
+  const minDistance = getPhotoDistanceToRoute(photoLatLng)
 
-  routePhoto.value = {
+  console.log(
+    'Processed photo',
+    photo.name,
+    `Coordinates: ${lat}, ${lng}`,
+    'Distance:',
+    minDistance,
+    'm',
+    `Date: ${date}`
+  )
+  return {
+    id: computeFileId(photo),
     base64: await getBase64(photo),
     latlng: photoLatLng,
     distance: minDistance
   }
-  console.log('Photo distance to route:', minDistance, 'm')
-  console.log(`Coordinates: ${lat}, ${lng}`, `Date: ${date}`, `Index: ${index}`)
-  openPhotoPopup()
 }
 
-function openPhotoPopup() {
-  if (!map.value || !routePhoto.value) {
+async function handlePhotosChange(event: Event) {
+  const { files } = event.target as HTMLInputElement
+  if (!files) {
     return
   }
-  if (routePhoto.value.distance > 100) {
-    alert('Photo is too far from the route')
-    console.log('Photo is too far from the route, distance:', routePhoto.value.distance, 'm')
-    return
+
+  const existingFiles = selectedPhotos.value.reduce(
+    (acc, cur) => ({ ...acc, [cur.id]: cur }),
+    {} as Record<string, RoutePhoto>
+  )
+
+  const photos = (
+    await Promise.all(Array.from(files).map((f) => processPhoto(f, existingFiles)))
+  ).filter((f) => !!f)
+  selectedPhotos.value = photos
+}
+
+function placeUnrelevantPhotos() {
+  photoMarkersLayer.value.clearLayers()
+  selectedPhotos.value
+    .filter((p) => p.distance > 100)
+    .forEach((photo) => {
+      photoMarkersLayer.value.addLayer(
+        L.marker(photo.latlng).bindPopup(`<img class="route-image" src=${photo.base64} />`)
+      )
+    })
+  if (map.value) {
+    photoMarkersLayer.value.addTo(map.value)
   }
-  L.popup({ content: `<img class="route-image" src=${routePhoto.value.base64} />` })
-    .setLatLng(routePhoto.value.latlng)
-    .openOn(map.value)
+}
+
+function openPhotoPopups() {
+  photoPopupsLayer.value.clearLayers()
+  selectedPhotos.value
+    .filter((p) => p.distance <= 100)
+    .forEach((photo) => {
+      photoPopupsLayer.value.addLayer(
+        L.popup({ content: `<img class="route-image" src=${photo.base64} />` }).setLatLng(
+          photo.latlng
+        )
+      )
+    })
+  if (map.value) {
+    photoPopupsLayer.value.addTo(map.value)
+  }
 }
 </script>
 <style scoped lang="scss">
